@@ -1,0 +1,326 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ENUMS ─────────────────────────────────────────────
+
+enum UserRole {
+  CUSTOMER
+  SALOON_OWNER
+  ADMIN
+}
+
+enum BookingStatus {
+  PENDING         // Payment/confirmation awaited
+  CONFIRMED       // Booking confirmed
+  IN_PROGRESS     // Service started
+  COMPLETED       // Service done
+  CANCELLED       // Cancelled by user/owner
+  NO_SHOW         // Customer didn't show up
+}
+
+enum PaymentStatus {
+  PENDING
+  CAPTURED
+  REFUNDED
+  FAILED
+}
+
+enum SubscriptionPlan {
+  BASIC           // ₹499 — no notifications
+  STANDARD        // ₹999 — WhatsApp notifications
+  PREMIUM         // ₹1499 — WhatsApp + IVR + analytics
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+// ─── MODELS ────────────────────────────────────────────
+
+model User {
+  id            String      @id @default(cuid())
+  phone         String      @unique
+  name          String?
+  email         String?
+  role          UserRole    @default(CUSTOMER)
+  avatarUrl     String?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Relations
+  bookings      Booking[]
+  reviews       Review[]
+  ownedSaloons  Saloon[]    @relation("SaloonOwner")
+
+  @@index([phone])
+  @@map("users")
+}
+
+model Saloon {
+  id              String            @id @default(cuid())
+  name            String
+  slug            String            @unique  // URL-friendly name
+  ownerId         String
+  phone           String
+  email           String?
+  description     String?
+  address         String
+  city            String
+  state           String            @default("Maharashtra")
+  pincode         String
+  latitude        Float?
+  longitude       Float?
+  coverImageUrl   String?
+  logoUrl         String?
+  qrCodeUrl       String?           // Generated QR code image URL
+
+  // Business settings
+  slotDurationMin Int               @default(30)    // Default slot duration
+  maxAdvanceDays  Int               @default(7)     // How far ahead can book
+  requireAdvance  Boolean           @default(false) // Require advance payment?
+  advanceAmount   Float?                            // Advance amount in ₹
+  cancellationMin Int               @default(60)    // Free cancel before X mins
+  walkInBuffer    Int               @default(2)     // Reserved walk-in slots/hour
+  autoConfirm     Boolean           @default(true)  // Auto-confirm bookings?
+
+  // Subscription
+  plan            SubscriptionPlan  @default(BASIC)
+  planExpiresAt   DateTime?
+  isActive        Boolean           @default(true)
+  isVerified      Boolean           @default(false)
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  // Relations
+  owner           User              @relation("SaloonOwner", fields: [ownerId], references: [id])
+  services        Service[]
+  staff           Staff[]
+  bookings        Booking[]
+  reviews         Review[]
+  schedule        SaloonSchedule[]
+  holidays        SaloonHoliday[]
+  gallery         SaloonGallery[]
+  subscription    SaloonSubscription[]
+
+  @@index([city])
+  @@index([slug])
+  @@index([ownerId])
+  @@index([latitude, longitude])
+  @@map("saloons")
+}
+
+model SaloonSchedule {
+  id          String    @id @default(cuid())
+  saloonId    String
+  dayOfWeek   DayOfWeek
+  openTime    String    // "09:00" (24hr format)
+  closeTime   String    // "21:00"
+  breakStart  String?   // "13:00" (lunch break)
+  breakEnd    String?   // "14:00"
+  isOpen      Boolean   @default(true)
+
+  saloon      Saloon    @relation(fields: [saloonId], references: [id], onDelete: Cascade)
+
+  @@unique([saloonId, dayOfWeek])
+  @@map("saloon_schedules")
+}
+
+model SaloonHoliday {
+  id          String    @id @default(cuid())
+  saloonId    String
+  date        DateTime  @db.Date
+  reason      String?
+
+  saloon      Saloon    @relation(fields: [saloonId], references: [id], onDelete: Cascade)
+
+  @@unique([saloonId, date])
+  @@map("saloon_holidays")
+}
+
+model SaloonGallery {
+  id          String    @id @default(cuid())
+  saloonId    String
+  imageUrl    String
+  caption     String?
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+
+  saloon      Saloon    @relation(fields: [saloonId], references: [id], onDelete: Cascade)
+
+  @@map("saloon_gallery")
+}
+
+model Staff {
+  id          String    @id @default(cuid())
+  saloonId    String
+  name        String
+  phone       String?
+  avatarUrl   String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  saloon      Saloon    @relation(fields: [saloonId], references: [id], onDelete: Cascade)
+  bookings    Booking[]
+
+  @@map("staff")
+}
+
+model Service {
+  id          String    @id @default(cuid())
+  saloonId    String
+  name        String    // "Haircut", "Beard Trim", "Facial"
+  description String?
+  durationMin Int       // Duration in minutes
+  price       Float     // Price in ₹
+  isActive    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  saloon      Saloon    @relation(fields: [saloonId], references: [id], onDelete: Cascade)
+  bookings    BookingService[]
+
+  @@map("services")
+}
+
+model Booking {
+  id              String          @id @default(cuid())
+  bookingNumber   String          @unique  // Human-readable: "BK-20261002-001"
+  userId          String
+  saloonId        String
+  staffId         String?         // Assigned barber (nullable for auto-assign)
+  slotDate        DateTime        @db.Date
+  slotStartTime   String          // "14:30" (24hr)
+  slotEndTime     String          // "15:00"
+  totalDuration   Int             // Total minutes
+  totalAmount     Float           // Total service price
+  status          BookingStatus   @default(PENDING)
+
+  // Notification tracking
+  confirmationSent  Boolean       @default(false)
+  reminderSent      Boolean       @default(false)
+  ivrSent           Boolean       @default(false)
+  reviewRequested   Boolean       @default(false)
+
+  // Cancellation
+  cancelledAt     DateTime?
+  cancelledBy     String?         // "customer" | "owner"
+  cancelReason    String?
+
+  // Timestamps
+  checkedInAt     DateTime?       // When customer actually arrived
+  completedAt     DateTime?       // When service finished
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  user            User            @relation(fields: [userId], references: [id])
+  saloon          Saloon          @relation(fields: [saloonId], references: [id])
+  staff           Staff?          @relation(fields: [staffId], references: [id])
+  services        BookingService[]
+  payment         Payment?
+  review          Review?
+
+  @@unique([saloonId, slotDate, slotStartTime, staffId])  // Prevent double booking
+  @@index([userId])
+  @@index([saloonId, slotDate])
+  @@index([status])
+  @@index([slotDate, slotStartTime])
+  @@map("bookings")
+}
+
+model BookingService {
+  id          String    @id @default(cuid())
+  bookingId   String
+  serviceId   String
+  price       Float     // Price at time of booking (snapshot)
+  duration    Int       // Duration at time of booking
+
+  booking     Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  service     Service   @relation(fields: [serviceId], references: [id])
+
+  @@map("booking_services")
+}
+
+model Payment {
+  id                String          @id @default(cuid())
+  bookingId         String          @unique
+  razorpayOrderId   String?         @unique
+  razorpayPaymentId String?         @unique
+  amount            Float           // Amount in ₹
+  currency          String          @default("INR")
+  status            PaymentStatus   @default(PENDING)
+  method            String?         // "upi", "card", "netbanking"
+  refundAmount      Float?
+  refundedAt        DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  booking           Booking         @relation(fields: [bookingId], references: [id])
+
+  @@index([razorpayOrderId])
+  @@map("payments")
+}
+
+model Review {
+  id          String    @id @default(cuid())
+  bookingId   String    @unique
+  userId      String
+  saloonId    String
+  rating      Int       // 1-5
+  comment     String?
+  ownerReply  String?   // Saloon owner can reply
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  booking     Booking   @relation(fields: [bookingId], references: [id])
+  user        User      @relation(fields: [userId], references: [id])
+  saloon      Saloon    @relation(fields: [saloonId], references: [id])
+
+  @@index([saloonId])
+  @@map("reviews")
+}
+
+model SaloonSubscription {
+  id            String    @id @default(cuid())
+  saloonId      String
+  plan          SubscriptionPlan
+  amount        Float
+  startDate     DateTime
+  endDate       DateTime
+  razorpaySubId String?   // Razorpay subscription ID
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  saloon        Saloon    @relation(fields: [saloonId], references: [id])
+
+  @@index([saloonId])
+  @@map("saloon_subscriptions")
+}
+
+model OtpLog {
+  id        String    @id @default(cuid())
+  phone     String
+  otp       String
+  expiresAt DateTime
+  verified  Boolean   @default(false)
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  @@index([phone, otp])
+  @@map("otp_logs")
+}
